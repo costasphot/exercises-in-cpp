@@ -4,12 +4,22 @@
 #include <iostream>
 #include <cstdint>
 #include <stdexcept>
-#include <limits>
 #include <windows.h>
 
 namespace Config {
   constexpr bool DEVELOPER_MODE = false;
   constexpr bool CONFIDENTIAL_OVERRIDE = false;
+}
+
+namespace AddressDefaults {
+  constexpr const char* STREET_UNSET{"Unset"};
+  constexpr const char* CITY_UNSET{"Unset"};
+  constexpr int POSTAL_CODE_UNSET{-1};
+}
+
+namespace PersonDefaults {
+  constexpr const char* NAME_UNSET{"Unset"};
+  constexpr std::uint8_t AGE_UNSET{0};
 }
 
 class Validator {
@@ -44,13 +54,16 @@ class Validator {
 class Address {
   public:
   // Constructors
-    Address() : m_street("Παπακωστάκη 115"), m_city("Θεσσαλονίκη"), m_postal_code(41900) {
+    Address()
+        : m_street(AddressDefaults::STREET_UNSET),
+          m_city(AddressDefaults::CITY_UNSET),
+          m_postal_code(AddressDefaults::POSTAL_CODE_UNSET) { // 0 indicates postal code unset
       if (Config::DEVELOPER_MODE) {
         std::cout << "Default constructor running for '" << *this << "'.\n";
       }
     }
     
-    Address(std::string street, std::string city, int postal_code)
+    explicit Address(std::string street, std::string city, int postal_code)
         : m_street(std::move(street)), m_city(std::move(city)), m_postal_code(postal_code) { // Either const & or std::move
           try {
             Validator::ValidateAddress(m_street, m_city, m_postal_code);
@@ -63,10 +76,10 @@ class Address {
             // Log additional information
             std::cerr << "Street: " << m_street << ", City: " << m_city << ", Postal Code: " << m_postal_code << '\n';
       
-            // Take corrective action (or just close the program)        
-            m_street = "Παπακωστάκη 115";
-            m_city = "Θεσσαλονίκη";
-            m_postal_code = 41900;
+            // Take corrective action        
+            m_street = AddressDefaults::STREET_UNSET;
+            m_city = AddressDefaults::CITY_UNSET;
+            m_postal_code = AddressDefaults::POSTAL_CODE_UNSET;
           }
     }
 
@@ -96,13 +109,16 @@ class Address {
 class Person {
   public:
   // Constructors
-    Person() : m_name("Γιάννης"), m_age(25), m_address("Παπακωστάκη 115", std::string("Θεσσαλονίκη"), 41900) {
+    Person()
+        : m_name(PersonDefaults::NAME_UNSET),
+          m_age(PersonDefaults::AGE_UNSET),
+          m_address() { // Uses Address' default constructor
       if (Config::DEVELOPER_MODE) {
         std::cout << "Default constructor running for '" << *this << "'.\n";
       }
     }
     
-    Person(const std::string& name, std::uint8_t age, const Address& address)
+    explicit Person(const std::string& name, std::uint8_t age, const Address& address)
         : m_name(name), m_age(age), m_address(address) {
           try {
             Validator::ValidatePerson(m_name, m_age);
@@ -113,11 +129,16 @@ class Person {
           } catch (const std::invalid_argument& e) {
             Validator::HandleValidationFailure(e);
 
-            // TODO: Any corrective action here?
+            // Log additional information
+            std::cerr << "Name: " << m_name << ", Age: " << m_age << '\n';
+
+            // Take corrective action
+            m_name = PersonDefaults::NAME_UNSET;
+            m_age = PersonDefaults::AGE_UNSET;
           }
       }
 
-    Person(const std::string& name, const std::uint8_t age, const std::string& street,
+    explicit Person(const std::string& name, const std::uint8_t age, const std::string& street,
         const std::string& city, int postal_code)
         : m_name(name), m_age(age), m_address(street, city, postal_code) {
           try {
@@ -133,8 +154,8 @@ class Person {
             std::cerr << "Name: " << m_name << ", Age: " << m_age << '\n';
       
             // Take corrective action        
-            m_name = "Γιάννης";
-            m_age = 25;
+            m_name = PersonDefaults::NAME_UNSET;
+            m_age = PersonDefaults::AGE_UNSET;
           }
     }
   
@@ -184,7 +205,6 @@ int main() {
   Person person1 = Person("Γιάννης", 25, "Παπαδιαμάντη 73", "Θεσσαλονίκη", 41900);
   Person person2 = Person("Μαρία", 27, my_address);
 
-  // std::cout << person << '\n';
   person1.PrintPerson();
   person2.PrintPerson();
 
