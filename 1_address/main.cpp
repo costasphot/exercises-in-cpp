@@ -111,32 +111,13 @@ class Validator {
 
 class Address {
   public:
-  // Constructors
-    // Use Constructor Delegation
-    Address() : Address(AddressDefaults::STREET_UNSET, AddressDefaults::CITY_UNSET, std::nullopt) {
-      if constexpr (Config::DEBUG_MODE) {
-        std::cout << "Default constructor running for '" << *this << "'.\n";
+    // Factory Method to return either Address or ValidationError - involves pre-creation checks and logic.
+    static std::variant<Address, ValidationError> Create(const std::string& street, const std::string& city, int postal_code) {
+      if (auto error = Validator::ValidateAddress(street, city, postal_code)) {
+        return *error;
       }
-    }
-    
-    explicit Address(std::string street, std::string city, std::optional<int> postal_code)
-        : m_street(std::move(street)), m_city(std::move(city)), m_postal_code(postal_code)
-        { // Either const & or std::move
-          if (auto error = Validator::ValidateAddress(m_street, m_city, m_postal_code.value())) {
-            ResetToDefaults();
-            Validator::HandleValidationFailure(error.value(), "Address Constructor",
-                "Street: " + m_street + ", City: " + m_city + ", Postal Code: "
-                + std::to_string(m_postal_code.value()), Config::MAX_LOG_LENGTH);
-          } else if constexpr (Config::DEBUG_MODE) {
-            std::cout << "Parameterized constructor (3/3) running for '" << *this << "'.\n";
-          }        
-    }
 
-  // Destructor
-    ~Address() noexcept {
-      if constexpr (Config::DEBUG_MODE && Config::CONFIDENTIAL_OVERRIDE) {
-        std::cout << "Destructor running for '" << *this << "'.\n";
-      }
+      return Address(street, city, postal_code); // Return valid Address if success
     }
 
   // Information Display
@@ -145,9 +126,9 @@ class Address {
           << (m_postal_code ? std::to_string(m_postal_code.value()) : "Unset") << '\n';
     }
 
-  // Overloaded Operator Function
+  // Overloaded Operator <<
     friend std::ostream& operator<<(std::ostream& os, const Address& address) {
-      return os << address.m_street << ", " << address.m_postal_code.value();
+      return os << address.m_street << ", " << address.m_city << " (" << (address.m_postal_code ? std::to_string(address.m_postal_code.value()) : "Unset");
     }
 
   // Helper Function
@@ -158,6 +139,14 @@ class Address {
     }
   
   private:
+    // Hide constructor, use Create for control
+    Address(std::string street, std::string city, std::optional<int> postal_code)
+        : m_street(std::move(street)), m_city(std::move(city)), m_postal_code(postal_code) {
+        if constexpr (Config::DEBUG_MODE) {
+          std::cout << "Address object created: " << *this << '\n';
+        }
+    }
+
     std::string m_street;
     std::string m_city;
     std::optional<int> m_postal_code; // Optional type for unset state
@@ -165,43 +154,13 @@ class Address {
 
 class Person {
   public:
-  // Constructors
-    Person() : Person(PersonDefaults::NAME_UNSET, PersonDefaults::AGE_UNSET, Address()) {
-      if constexpr (Config::DEBUG_MODE) {
-        std::cout << "Default constructor running for '" << *this << "'.\n";
-      }
-    }
-    
-    explicit Person(const std::string& name, std::uint8_t age, const Address& address)
-        : m_name(name), m_age(age), m_address(address) {
-          // No need to call the Address Validator here; the Address Constructor already takes care of it.
-          if (auto error = Validator::ValidatePerson(m_name, m_age)) {
-            ResetToDefaults();
-            Validator::HandleValidationFailure(error.value(), "Person Constructor",
-                "Name: " + m_name + ", Age: " + std::to_string(m_age), Config::MAX_LOG_LENGTH);
-          } else if constexpr (Config::DEBUG_MODE) {
-            std::cout << "Parameterized constructor (3/3) with address object running for '" << *this << "'.\n";
-          }
+    // Factory Method
+    static std::variant<Person, ValidationError> Create(const std::string& name, const std::uint8_t age, const Address& address) {
+      if (auto error = Validator::ValidatePerson(name, age)) {
+        return *error;
       }
 
-    explicit Person(const std::string& name, const std::uint8_t age, const std::string& street,
-        const std::string& city, int postal_code)
-        : m_name(name), m_age(age), m_address(street, city, postal_code) {
-          if (auto error = Validator::ValidatePerson(m_name, m_age)) {
-            // Same comment about the Address Validator.
-            ResetToDefaults();
-            Validator::HandleValidationFailure(error.value(), "Person Constructor",
-                "Name: " + m_name + ", Age: " + std::to_string(m_age), Config::MAX_LOG_LENGTH);
-          } else if constexpr (Config::DEBUG_MODE) {
-            std::cout << "Parameterized constructor (3/3) with manual address running for '" << *this << "'.\n";
-          }
-    }
-  
-  // Destructor
-    ~Person() noexcept {
-      if constexpr (Config::DEBUG_MODE && Config::CONFIDENTIAL_OVERRIDE) {
-        std::cout << "Destructor running for '" << *this << "'.\n";
-      }
+      return Person(name, age, address); // Valid person
     }
 
   // Overloaded Operator Function
@@ -222,6 +181,13 @@ class Person {
     }
 
   private:
+    Person(std::string name, std::uint8_t age, Address address)
+        : m_name(std::move(name)), m_age(age), m_address(std::move(address)) {
+          if constexpr (Config::DEBUG_MODE) {
+            std::cout << "Person object created: " << *this << '\n';
+          }
+    }
+
     std::string m_name;
     std::uint8_t m_age;
     Address m_address;
@@ -251,23 +217,45 @@ static void ProgramTermination(std::error_code error_code = std::error_code()) {
 
 int main() {
   SetupConsole();
-
   LocaleSetup();
-  Address my_address = Address("Παπακωστάκη 115", "Αθήνα", 19840);
-  Person person1 = Person("Γιάννης", 25, "Παπαδιαμάντη 73", "Θεσσαλονίκη", 41900);
-  Person person2 = Person("Μαρία", 27, my_address);
 
-  person1.PrintPerson();
-  person2.PrintPerson();
+  // First example
+  auto address_result = Address::Create("Παπακωστάκη 115", "Αθήνα", 19840);
+  if (std::holds_alternative<ValidationError>(address_result)) {
+    Validator::HandleValidationFailure(
+        std::get<ValidationError>(address_result), "Main", "Address creation failed"
+    );
+  } else {
+    Address my_address = std::get<Address>(address_result);
+    std::cout << "Successfully created address:" << my_address << '\n';
 
-  Address valid_address = Address("Valid Street", "Valid City", 12345);
-  Person valid_person = Person("John Doe", 25, valid_address);
+    auto person_result = Person::Create("Γιάννης", 25, my_address);
+    if (std::holds_alternative<ValidationError>(person_result)) {
+      Validator::HandleValidationFailure(
+        std::get<ValidationError>(person_result), "Main", "Person creation failed"
+      );
+    } else {
+      Person my_person = std::get<Person>(person_result);
+      std::cout << "Successfully created person: " << my_person << '\n';
 
-  // Address invalid_address = Address("", "", -5);
-  // Person invalid_person = Person("", 150, invalid_address);
+      my_person.PrintPerson();
+    }
+  }
 
-  // valid_person.PrintPerson();
-  // invalid_person.PrintPerson();
+  // Second example
+  std::variant<Address, ValidationError> valid_address = Address::Create("Valid Street", "Valid City", 12345);
+  std::variant<Person, ValidationError> temp_person = Person::Create("John Doe", 25, std::get<Address>(valid_address));
+
+  if (std::holds_alternative<ValidationError>(temp_person)) {
+    Validator::HandleValidationFailure(
+      std::get<ValidationError>(temp_person), "Main", "Valid person creation failed"
+    );
+  } else {
+    Person valid_person = std::get<Person>(temp_person);
+    std::cout << "Successfully created person: " << valid_person << '\n';
+
+    valid_person.PrintPerson();
+  }
 
   ProgramTermination();
 }
