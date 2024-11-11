@@ -5,20 +5,11 @@
 #include <iostream>
 #include <cstdlib>
 #include <cstdint>
-#include <stdexcept>
 #include <string>
 #include <optional>
 #include <system_error>
 #include <variant>
-#include <map>
 #include <windows.h>
-
-#if __cplusplus >= 202002L
-  #include <format>
-  #define FORMAT_ENABLED 1
-#else
-  #define FORMAT_ENABLED 0
-#endif // __cplusplus
 
 enum class ValidationError {
   None = 0,
@@ -31,7 +22,7 @@ enum class ValidationError {
 
 namespace Config {
   // Do not use 'if constexpr' if I wanted to implement runtime toggling in the future.
-  constexpr bool DEVELOPER_MODE{true};
+  constexpr bool DEVELOPER_MODE{false};
   constexpr bool DEBUG_MODE{false};
   constexpr bool CONFIDENTIAL_OVERRIDE{false};
   
@@ -39,15 +30,19 @@ namespace Config {
   constexpr std::uint16_t MAX_LOG_LENGTH{50};
 }
 
-namespace AddressDefaults {
-  constexpr const char* STREET_UNSET{"Unset"};
-  constexpr const char* CITY_UNSET{"Unset"};
-  constexpr int POSTAL_CODE_UNSET{-1};
-}
+template<typename T>
+std::string CleanTypeName() {
+  // For more accurate and demangled type names, see: 'abi::__cxa_demangle' in GCC/Clang.
+  std::string type_name{typeid(T).name()};
+  std::size_t pos{0};
 
-namespace PersonDefaults {
-  constexpr const char* NAME_UNSET{"Unset"};
-  constexpr std::uint8_t AGE_UNSET{0};
+  // Find the first non-digit character in the type name.
+  while (pos < type_name.length() && std::isdigit(type_name[pos])) {
+    ++pos;
+  }
+
+  // Return the type name without the leading numbers.
+  return type_name.substr(pos);
 }
 
 class Validator {
@@ -82,22 +77,14 @@ class Validator {
       };
 
       if constexpr (Config::DEBUG_MODE) {
-        #if FORMAT_ENABLED
-          std::cerr << std::format("[Validation Failure] {}", error_message);
-          if (!context.empty()) std::cerr << std::format(" | Context: {}", Truncate(context));
-          if (!additional_info.empty()) std::cerr << std::format(" | Info: {}", Truncate(additional_info));
-          std::cerr << '\n';
-        #else
           std::cerr << "[Validation Failure] " << error_message;
           if (!context.empty()) std::cerr << " | Context: " << Truncate(context);
           if (!additional_info.empty()) std::cerr << " | Info: " << Truncate(additional_info);
           std::cerr << '\n';
-        #endif // FORMAT_ENABLED
       }
     }
 
-    static std::string GetErrorMessage(ValidationError error)
-    {
+    static std::string GetErrorMessage(ValidationError error) {
       switch (error) {
         case ValidationError::EmptyStreet: return "Street cannot be empty.";
         case ValidationError::EmptyCity: return "City cannot be empty.";
@@ -108,6 +95,61 @@ class Validator {
       }
     }
 };
+
+static void ProgramTermination(std::error_code error_code = std::error_code()) {
+  // Pause the program before returning 0
+  std::cout << "\nPress Enter to exit...";
+  std::cin.clear();
+  std::cin.get();
+
+  std::exit(error_code ? error_code.value() : EXIT_SUCCESS);
+}
+
+template<typename T, typename... Args>
+auto CreateSafely(const std::string& context, Args&&... args)
+    -> decltype(T::Create(std::forward<Args>(args)...))
+    //    'decltype' constraining:
+    // Ensures this function only works for types 'T' that implement a
+    // 'Create' method returning a 'std::variant<T, ValidationError>'.
+    //
+    //    Perfect Forwarding:
+    // 'std::forward' ensures that each argument 'args...' retains its original value category
+    // (lvalue or rvalue) as it was passed to 'CreateSafely' when being forwarded to 'T::Create'.
+    // This preserves efficiency by avoiding unnecessary copies or moves.
+{ 
+  // Forwarding arguments to 'Create' and storing the result in a variant.
+  auto result = T::Create(std::forward<Args>(args)...);
+
+  if (std::holds_alternative<ValidationError>(result)) {
+    // Handle the case where 'Create' returns a validation error.
+    Validator::HandleValidationFailure(
+      std::get<ValidationError>(result), context, "Creation failed"
+    );
+    // No need to manipulate or re-wrap; directly return the error from the variant.
+  }
+
+  // Return the result as is (could be either 'T' or 'ValidationError').
+  return result;
+}
+
+template<typename T, typename... Args>
+T CreateAndCheck(const std::string& context, Args&&... args) {
+  auto result = CreateSafely<T>(context, std::forward<Args>(args)...);
+
+  if (std::holds_alternative<ValidationError>(result)) {
+    Validator::HandleValidationFailure(
+      std::get<ValidationError>(result), context, "Critical Creation Failure"
+    );
+
+    ProgramTermination(std::make_error_code(std::errc::invalid_argument));
+  }
+  
+  T created_object = std::get<T>(result);
+  if constexpr (Config::DEBUG_MODE) {
+    std::cout << "Successfully created object '" << created_object << "' of type '" << CleanTypeName<T>() << "'.\n";
+  }
+  return created_object; // Return the valid object
+}
 
 class Address {
   public:
@@ -128,23 +170,17 @@ class Address {
 
   // Overloaded Operator <<
     friend std::ostream& operator<<(std::ostream& os, const Address& address) {
-      return os << address.m_street << ", " << address.m_city << " (" << (address.m_postal_code ? std::to_string(address.m_postal_code.value()) : "Unset");
-    }
-
-  // Helper Function
-    void ResetToDefaults() {
-      m_street = AddressDefaults::STREET_UNSET;
-      m_city = AddressDefaults::CITY_UNSET;
-      m_postal_code = std::nullopt;
+      return os << address.m_street << ", " << address.m_city << " ("
+          << (address.m_postal_code ? std::to_string(address.m_postal_code.value()) : "Unset") << ')';
     }
   
   private:
     // Hide constructor, use Create for control
     Address(std::string street, std::string city, std::optional<int> postal_code)
         : m_street(std::move(street)), m_city(std::move(city)), m_postal_code(postal_code) {
-        if constexpr (Config::DEBUG_MODE) {
-          std::cout << "Address object created: " << *this << '\n';
-        }
+          if constexpr (Config::DEBUG_MODE) {
+            std::cout << "Address object created: " << *this << '\n';
+          }
     }
 
     std::string m_street;
@@ -174,12 +210,6 @@ class Person {
       m_address.PrintAddress();
     }
 
-  // Helper function
-    void ResetToDefaults() {
-      m_name = PersonDefaults::NAME_UNSET;
-      m_age = PersonDefaults::AGE_UNSET;
-    }
-
   private:
     Person(std::string name, std::uint8_t age, Address address)
         : m_name(std::move(name)), m_age(age), m_address(std::move(address)) {
@@ -206,56 +236,15 @@ static void LocaleSetup() {
   std::cout.imbue(std::locale());
 }
 
-static void ProgramTermination(std::error_code error_code = std::error_code()) {
-  // Pause the program before returning 0
-  std::cout << "\nPress Enter to exit...";
-  std::cin.clear();
-  std::cin.get();
-  std::exit(error_code.value());
-}
-
 
 int main() {
   SetupConsole();
   LocaleSetup();
 
-  // First example
-  auto address_result = Address::Create("Παπακωστάκη 115", "Αθήνα", 19840);
-  if (std::holds_alternative<ValidationError>(address_result)) {
-    Validator::HandleValidationFailure(
-        std::get<ValidationError>(address_result), "Main", "Address creation failed"
-    );
-  } else {
-    Address my_address = std::get<Address>(address_result);
-    std::cout << "Successfully created address:" << my_address << '\n';
+  auto address = CreateAndCheck<Address>("Main", "Valid Street", "Valid City", 12345);
+  auto person = CreateAndCheck<Person>("Main", "John Doe", 30, address);
 
-    auto person_result = Person::Create("Γιάννης", 25, my_address);
-    if (std::holds_alternative<ValidationError>(person_result)) {
-      Validator::HandleValidationFailure(
-        std::get<ValidationError>(person_result), "Main", "Person creation failed"
-      );
-    } else {
-      Person my_person = std::get<Person>(person_result);
-      std::cout << "Successfully created person: " << my_person << '\n';
-
-      my_person.PrintPerson();
-    }
-  }
-
-  // Second example
-  std::variant<Address, ValidationError> valid_address = Address::Create("Valid Street", "Valid City", 12345);
-  std::variant<Person, ValidationError> temp_person = Person::Create("John Doe", 25, std::get<Address>(valid_address));
-
-  if (std::holds_alternative<ValidationError>(temp_person)) {
-    Validator::HandleValidationFailure(
-      std::get<ValidationError>(temp_person), "Main", "Valid person creation failed"
-    );
-  } else {
-    Person valid_person = std::get<Person>(temp_person);
-    std::cout << "Successfully created person: " << valid_person << '\n';
-
-    valid_person.PrintPerson();
-  }
+  person.PrintPerson();
 
   ProgramTermination();
 }

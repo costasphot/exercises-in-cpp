@@ -1,0 +1,40 @@
+// main_examples.txt
+// This is the underlying code of wrapper function I made to simplify repititive 'Create' logic:
+
+// First example
+auto address_result = Address::Create("Παπακωστάκη 115", "Αθήνα", 19840);
+if (std::holds_alternative<ValidationError>(address_result)) {
+  Validator::HandleValidationFailure(
+      std::get<ValidationError>(address_result), "Main", "Address creation failed"
+  );
+} else {
+  Address my_address = std::get<Address>(address_result);
+  std::cout << "Successfully created address:" << my_address << '\n';
+
+  auto person_result = Person::Create("Γιάννης", 25, my_address);
+  if (std::holds_alternative<ValidationError>(person_result)) {
+    Validator::HandleValidationFailure(
+      std::get<ValidationError>(person_result), "Main", "Person creation failed"
+    );
+  } else {
+    Person my_person = std::get<Person>(person_result);
+    std::cout << "Successfully created person: " << my_person << '\n';
+
+    my_person.PrintPerson();
+  }
+}
+
+// Second example
+std::variant<Address, ValidationError> valid_address = Address::Create("Valid Street", "Valid City", 12345);
+std::variant<Person, ValidationError> temp_person = Person::Create("John Doe", 25, std::get<Address>(valid_address));
+
+if (std::holds_alternative<ValidationError>(temp_person)) {
+  Validator::HandleValidationFailure(
+    std::get<ValidationError>(temp_person), "Main", "Valid person creation failed"
+  );
+} else {
+  Person valid_person = std::get<Person>(temp_person);
+  std::cout << "Successfully created person: " << valid_person << '\n';
+
+  valid_person.PrintPerson();
+}
