@@ -9,7 +9,22 @@
 #include <optional>
 #include <system_error>
 #include <variant>
+#include <vector>
 #include <windows.h>
+
+#if __cplusplus >= 202002L
+  #include <span>
+  #define SUPPORTS_CPP20 1
+#else
+  #define SUPPORTS_CPP20 0
+#endif // __cplusplus
+
+// 'std::string_view': Any function that only needs to read the string without taking ownership or modifying it.
+
+// Strong typedef to prevent accidental misuse.
+using PostalCode = std::uint32_t;
+using Age = std::uint8_t;
+using LogEntryMaxLength = std::size_t;
 
 enum class ValidationError {
   None = 0,
@@ -20,13 +35,23 @@ enum class ValidationError {
   InvalidAge
 };
 
+struct ErrorReport {
+  ValidationError error;
+  std::string context;
+  std::string message;
+
+  void Log() const {
+    Validator::HandleValidationFailure(error, context, message);
+  }
+};
+
 namespace Config {
   // Do not use 'if constexpr' if I wanted to implement runtime toggling in the future.
   constexpr bool DEVELOPER_MODE{false};
   constexpr bool DEBUG_MODE{false};
   constexpr bool CONFIDENTIAL_OVERRIDE{false};
   
-  // Maximum length for log entries before truncation
+  // Maximum length for log entries before truncation.
   constexpr std::uint16_t MAX_LOG_LENGTH{50};
 }
 
@@ -45,16 +70,42 @@ std::string CleanTypeName() {
   return type_name.substr(pos);
 }
 
+// For C++20, use constexpr lambda below:
+// constexpr auto isValidPostalCode = [](int code) { return code >= 1 && code <= 99950; };
+constexpr bool IsValidPostalCode(PostalCode postal_code) { // Compile-time optimization
+  return postal_code >= 1 && postal_code <= 99950;
+}
+
 class Validator {
   public:
-    static std::optional<ValidationError> ValidateAddress(const std::string& street, const std::string& city, int postal_code) {
+    static std::optional<ValidationError> ValidateAddress(std::string_view street, std::string_view city, PostalCode postal_code) {
       if (street.empty()) return ValidationError::EmptyStreet;
       if (city.empty()) return ValidationError::EmptyCity;
-      if (postal_code < 1 || postal_code > 99950) return ValidationError::InvalidPostalCode;
+      if (!IsValidPostalCode(postal_code)) return ValidationError::InvalidPostalCode;
       return std::nullopt; // Validation successful
     }
+    
+    #if SUPPORTS_CPP20
+      static std::optional<ValidationError> ValidateBatchAddresses(std::span<const Address> addresses) {
+        for (const auto& address : addresses) {
+          if (auto error = ValidateAddress(address.GetStreet(), address.GetCity(), ))
+        }
+      }
+    #else
+        std::vector<ValidationError> ValidateBatchAddresses(const std::vector<Address>& addresses) {
+        std::vector<ValidationError> errors;
 
-    static std::optional<ValidationError> ValidatePerson(const std::string& name, std::uint8_t age) {
+        for (const auto& address : addresses) {
+            if (auto error = Validator::ValidateAddress(address.GetStreet(), address.GetCity(), address.GetPostalCode())) {
+                errors.push_back(*error);
+            }
+        }
+
+        return errors;
+      }
+    #endif // SUPPORTS_CPP20
+
+    static std::optional<ValidationError> ValidatePerson(std::string_view name, const Age age) {
       if (name.empty()) return ValidationError::EmptyName;
       if (age == 0 || age > 120) return ValidationError::InvalidAge;
       return std::nullopt; // Validation successful
@@ -62,18 +113,18 @@ class Validator {
 
     static void HandleValidationFailure(
         ValidationError error,
-        const std::string& context = "",
-        const std::string& additional_info = "",
-        std::size_t max_length = 100) // Default maximum length for context and info
+        std::string_view context = "",
+        std::string_view additional_info = "",
+        LogEntryMaxLength max_length = 100) // Default maximum length for context and info
     {
       // Map ValidationError to error message
       std::string error_message = GetErrorMessage(error);
       
-      auto Truncate = [max_length](const std::string& input) -> std::string {
+      auto Truncate = [max_length](std::string_view input) -> std::string {
         if (input.length() > max_length) {
-          return input.substr(0, max_length) + "..."; // Add ellipsis to indicate truncation
+          return std::string(input.substr(0, max_length)) + "..."; // Add ellipsis to indicate truncation
         }
-        return input;
+        return std::string(input);
       };
 
       if constexpr (Config::DEBUG_MODE) {
@@ -106,7 +157,8 @@ static void ProgramTermination(std::error_code error_code = std::error_code()) {
 }
 
 template<typename T, typename... Args>
-auto CreateSafely(const std::string& context, Args&&... args)
+// Use 'std::string_view' to prevent multiple copies of error messages.
+auto CreateSafely(std::string_view context, Args&&... args)
     -> decltype(T::Create(std::forward<Args>(args)...))
     //    'decltype' constraining:
     // Ensures this function only works for types 'T' that implement a
@@ -122,9 +174,9 @@ auto CreateSafely(const std::string& context, Args&&... args)
 
   if (std::holds_alternative<ValidationError>(result)) {
     // Handle the case where 'Create' returns a validation error.
-    Validator::HandleValidationFailure(
-      std::get<ValidationError>(result), context, "Creation failed"
-    );
+    ErrorReport report{std::get<ValidationError>(result), context, "Creation failed"};
+    report.Log();
+
     // No need to manipulate or re-wrap; directly return the error from the variant.
   }
 
@@ -137,9 +189,8 @@ T CreateAndCheck(const std::string& context, Args&&... args) {
   auto result = CreateSafely<T>(context, std::forward<Args>(args)...);
 
   if (std::holds_alternative<ValidationError>(result)) {
-    Validator::HandleValidationFailure(
-      std::get<ValidationError>(result), context, "Critical Creation Failure"
-    );
+    ErrorReport report{std::get<ValidationError>(result), context, "Critical Creation Failure"};
+    report.Log();
 
     ProgramTermination(std::make_error_code(std::errc::invalid_argument));
   }
@@ -153,14 +204,22 @@ T CreateAndCheck(const std::string& context, Args&&... args) {
 
 class Address {
   public:
-    // Factory Method to return either Address or ValidationError - involves pre-creation checks and logic.
-    static std::variant<Address, ValidationError> Create(const std::string& street, const std::string& city, int postal_code) {
+    static constexpr PostalCode POSTAL_CODE_UNSET{0};
+
+  // Factory Method to return either Address or ValidationError - involves pre-creation checks and logic.
+    static std::variant<Address, ValidationError> Create(std::string_view street, std::string_view city, PostalCode postal_code) {
       if (auto error = Validator::ValidateAddress(street, city, postal_code)) {
         return *error;
       }
 
       return Address(street, city, postal_code); // Return valid Address if success
     }
+
+  // Getters
+    constexpr const std::string& GetStreet() const noexcept { return m_street; }
+    constexpr const std::string& GetCity() const noexcept { return m_city; }
+    constexpr const PostalCode GetPostalCode() const noexcept { return m_postal_code.value_or(POSTAL_CODE_UNSET); }
+    // 'value_or': Returns the value if present; otherwise, it provides a default.
 
   // Information Display
     void PrintAddress() const {
@@ -176,8 +235,10 @@ class Address {
   
   private:
     // Hide constructor, use Create for control
-    Address(std::string street, std::string city, std::optional<int> postal_code)
-        : m_street(std::move(street)), m_city(std::move(city)), m_postal_code(postal_code) {
+    Address(std::string_view street, std::string_view city, std::optional<PostalCode> postal_code)
+        // 'std::string_view': Lightweight and non-owning.
+        // 'std::move': When transferring ownership of a resource (e.g.: std::string) between scopes.
+        : m_street(std::string(street)), m_city(std::string(city)), m_postal_code(postal_code) { // Explicit conversion to'std::string'.
           if constexpr (Config::DEBUG_MODE) {
             std::cout << "Address object created: " << *this << '\n';
           }
@@ -185,13 +246,13 @@ class Address {
 
     std::string m_street;
     std::string m_city;
-    std::optional<int> m_postal_code; // Optional type for unset state
+    std::optional<PostalCode> m_postal_code; // Optional type for unset state
 };
 
 class Person {
   public:
     // Factory Method
-    static std::variant<Person, ValidationError> Create(const std::string& name, const std::uint8_t age, const Address& address) {
+    static std::variant<Person, ValidationError> Create(std::string_view name, const Age age, const Address& address) {
       if (auto error = Validator::ValidatePerson(name, age)) {
         return *error;
       }
@@ -211,8 +272,11 @@ class Person {
     }
 
   private:
-    Person(std::string name, std::uint8_t age, Address address)
-        : m_name(std::move(name)), m_age(age), m_address(std::move(address)) {
+    Person(std::string_view name, Age age, Address address)
+        : m_name(std::string(name)), // Explicit conversion to 'std::string'.
+          m_age(age),
+          m_address(std::move(address)) // Move the Address to avoid copying.
+      {
           if constexpr (Config::DEBUG_MODE) {
             std::cout << "Person object created: " << *this << '\n';
           }
