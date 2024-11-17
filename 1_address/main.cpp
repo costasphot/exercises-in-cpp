@@ -212,7 +212,7 @@ class Address {
         return *error;
       }
 
-      return Address(street, city, postal_code); // Return valid Address if success
+      return Address(std::string(street), std::string(city), postal_code); // Return valid Address if success
     }
 
   // Getters
@@ -235,10 +235,10 @@ class Address {
   
   private:
     // Hide constructor, use Create for control
-    Address(std::string_view street, std::string_view city, std::optional<PostalCode> postal_code)
+    Address(std::string street, std::string city, std::optional<PostalCode> postal_code)
         // 'std::string_view': Lightweight and non-owning.
         // 'std::move': When transferring ownership of a resource (e.g.: std::string) between scopes.
-        : m_street(std::string(street)), m_city(std::string(city)), m_postal_code(postal_code) { // Explicit conversion to'std::string'.
+        : m_street(std::move(street)), m_city(std::move(city)), m_postal_code(postal_code) { // Explicit conversion to'std::string'.
           if constexpr (Config::DEBUG_MODE) {
             std::cout << "Address object created: " << *this << '\n';
           }
@@ -257,23 +257,23 @@ class Person {
         return *error;
       }
 
-      return Person(name, age, address); // Valid person
+      return Person(std::string(name), age, address); // Valid person
     }
 
   // Overloaded Operator Function
     friend std::ostream& operator<<(std::ostream& os, const Person& person) {
-      return os << person.m_name << ' ' << static_cast<int>(person.m_age);
+      return os << person.m_name << ' ' << static_cast<unsigned int>(person.m_age);
     }
 
   // Information Display
     void PrintPerson() const {
-      std::cout << "Name: " << m_name << ", Age: " << static_cast<int>(m_age) << ", ";
+      std::cout << "Name: " << m_name << ", Age: " << static_cast<unsigned int>(m_age) << ", ";
       m_address.PrintAddress();
     }
 
   private:
-    Person(std::string_view name, Age age, Address address)
-        : m_name(std::string(name)), // Explicit conversion to 'std::string'.
+    Person(std::string name, Age age, Address address)
+        : m_name(std::move(name)), // Explicit conversion to 'std::string'.
           m_age(age),
           m_address(std::move(address)) // Move the Address to avoid copying.
       {

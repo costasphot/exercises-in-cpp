@@ -145,7 +145,7 @@ void CollectVehicles(std::unique_ptr<Vehicle>* vehicles, std::size_t size){
   for (std::size_t i{0}; i < size; ++i) {
     int choice;
     std::cout << "\nCreate vehicle " << i + 1 << ":\n";
-    std::cout << "1) Enter 1 for car, 2 for Truck: ";
+    std::cout << "1) Enter 1 for Car, 2 for Truck: ";
     std::cin >> choice;
 
     switch (choice) {

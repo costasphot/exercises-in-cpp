@@ -57,6 +57,8 @@
     "xtr1common": "cpp",
     "xtree": "cpp",
     "xutility": "cpp",
-    "span": "cpp"
+    "span": "cpp",
+    "stdlib.h": "c",
+    "inttypes.h": "c"
   }
 }
